@@ -287,26 +287,15 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                     disposedTcs.TrySetResult(c.Response.StatusCode);
                 });
 
-            var hostBuilder = new WebHostBuilder()
-                .UseKestrel()
-                .UseUrls("http://127.0.0.1:0")
-                .ConfigureServices(services => services.AddSingleton<IHttpContextFactory>(mockHttpContextFactory.Object))
-                .Configure(app =>
-                {
-                    app.Run(handler);
-                });
-
-            using (var host = hostBuilder.Build())
+            using (var server = new TestServer(handler, new TestServiceContext(), "http://127.0.0.1:0", mockHttpContextFactory.Object))
             {
-                host.Start();
-
                 if (!sendMalformedRequest)
                 {
                     using (var client = new HttpClient())
                     {
                         try
                         {
-                            var response = await client.GetAsync($"http://localhost:{host.GetPort()}/");
+                            var response = await client.GetAsync($"http://127.0.0.1:{server.Port}/");
                             Assert.Equal(expectedClientStatusCode, response.StatusCode);
                         }
                         catch
@@ -320,15 +309,20 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
                 }
                 else
                 {
-                    using (var connection = new TestConnection(host.GetPort()))
+                    using (var connection = new TestConnection(server.Port))
                     {
                         await connection.Send(
                             "POST / HTTP/1.1",
                             "Transfer-Encoding: chunked",
                             "",
-                            "wrong");
-                        await connection.Receive(
-                            "HTTP/1.1 400 Bad Request");
+                            "gg");
+                        await connection.ReceiveForcedEnd(
+                            "HTTP/1.1 400 Bad Request",
+                            "Connection: close",
+                            $"Date: {server.Context.DateHeaderValue}",
+                            "Content-Length: 0",
+                            "",
+                            "");
                     }
                 }
 
