@@ -271,6 +271,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Internal.Http
                 try
                 {
                     var contentLength = FrameHeaders.ParseContentLength(unparsedContentLength);
+
+                    if (contentLength > context.ServerOptions.Limits.MaxRequestBodySize)
+                    {
+                        context.RejectRequest(RequestRejectionReason.PayloadTooLarge);
+                    }
+
                     return new ForContentLength(keepAlive, contentLength, context);
                 }
                 catch (InvalidOperationException)
@@ -393,6 +399,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Internal.Http
 
             private readonly SocketInput _input;
             private readonly FrameRequestHeaders _requestHeaders;
+            private long _inputBytesRead;
             private int _inputLength;
 
             private Mode _mode = Mode.Prefix;
@@ -413,6 +420,12 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Internal.Http
             protected override void OnConsumedBytes(int count)
             {
                 _inputLength -= count;
+                _inputBytesRead += count;
+
+                if (_inputBytesRead > _context.ServerOptions.Limits.MaxRequestBodySize)
+                {
+                    _context.RejectRequest(RequestRejectionReason.PayloadTooLarge);
+                }
             }
 
             private async Task<ArraySegment<byte>> PeekStateMachineAsync()

@@ -28,7 +28,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             {
                 using (var connection = new TestConnection(server.Port))
                 {
-                    await SendRequest(connection, requestBodySize, chunks);
+                    await connection.SendAll(BuildRequest(connection, requestBodySize, chunks));
 
                     await connection.Receive(
                         "HTTP/1.1 200 OK",
@@ -50,11 +50,21 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
         [InlineData(MaxRequestBodySize + 1, 2)]
         public async Task ServerRejectsRequestBodyExceedingLimit(int requestBodySize, int chunks)
         {
-            using (var server = CreateServer(MaxRequestBodySize, async httpContext => await httpContext.Response.WriteAsync("hello, world")))
+            using (var server = CreateServer(MaxRequestBodySize, async httpContext =>
+            {
+                var received = 0;
+                while (received < requestBodySize)
+                {
+                    received += await httpContext.Request.Body.ReadAsync(new byte[1024], 0, 1024);
+                }
+
+                // Should never get here
+                await httpContext.Response.WriteAsync("hello, world");
+            }))
             {
                 using (var connection = new TestConnection(server.Port))
                 {
-                    await SendRequest(connection, requestBodySize, chunks);
+                    await connection.SendAll(BuildRequest(connection, requestBodySize, chunks));
 
                     await connection.ReceiveForcedEnd(
                         "HTTP/1.1 413 Payload Too Large",
@@ -104,44 +114,40 @@ namespace Microsoft.AspNetCore.Server.Kestrel.FunctionalTests
             }
         }
 
-        private async Task SendRequest(TestConnection connection, int requestBodySize, int chunks)
+        private string BuildRequest(TestConnection connection, int requestBodySize, int chunks)
         {
-            await connection.Send(
-                "POST / HTTP/1.1",
-                "");
+            var request = new StringBuilder();
+
+            request.Append("POST / HTTP/1.1\r\n");
 
             if (chunks == 0)
             {
-                await connection.Send(
-                    $"Content-Length: {requestBodySize}",
-                    "",
-                    new string('a', requestBodySize));
+                request.Append($"Content-Length: {requestBodySize}\r\n\r\n");
+                request.Append(new string('a', requestBodySize));
             }
             else
             {
-                await connection.Send(
-                    "Transfer-Encoding: chunked",
-                    "",
-                    "");
+                request.Append("Transfer-Encoding: chunked\r\n\r\n");
 
                 var bytesSent = 0;
                 while (bytesSent < requestBodySize)
                 {
                     var chunkSize = Math.Min(requestBodySize / chunks, requestBodySize - bytesSent);
 
-                    await connection.Send(
-                        $"{chunkSize:X}",
-                        new string('a', chunkSize),
-                        "");
+                    request.Append($"{chunkSize:X}\r\n");
+                    request.Append(new string('a', chunkSize));
+                    request.Append("\r\n");
 
                     bytesSent += chunkSize;
                 }
 
-                await connection.Send(
-                    "0",
-                    "",
-                    "");
+                // Make sure we sent the right amount of data
+                Assert.Equal(requestBodySize, bytesSent);
+
+                request.Append("0\r\n\r\n");
             }
+
+            return request.ToString();
         }
 
         private TestServer CreateServer(int maxRequestBodySize, RequestDelegate app)
